@@ -19,6 +19,7 @@ soulbound NFT — records every pick you make and unlocks tier bonuses on claims
 | `passport` (`pick_passport.wasm`) | Soulbound NEP-171 NFT: pick/result mirror, tier display, registers the perk gate in the coin |
 
 Deployment addresses: `COIN_ADDRESS = <todo>`, `PASSPORT_ADDRESS = <todo>`
+(exact testnet commands: see [DEPLOY.md](DEPLOY.md))
 
 ## Mechanics (exactly as implemented)
 

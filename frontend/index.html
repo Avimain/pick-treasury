@@ -95,6 +95,7 @@
       <div class="row" style="margin-top:10px">
         <label>coin <input id="cfg-coin" size="28" /></label>
         <label>passport <input id="cfg-passport" size="28" /></label>
+        <label>rpc <input id="cfg-rpc" size="28" /></label>
         <button id="cfg-save">save</button>
       </div>
       <p class="dim">Simulation &amp; docs: <a href="../simulation/simulate.py">simulate.py</a> · <a href="../README.md">README</a></p>
@@ -108,7 +109,7 @@
 // ---------------------------------------------------------------- config
 const CFG = {
   networkId: "testnet",
-  rpcUrl: "https://rpc.testnet.near.org",
+  rpcUrl: localStorage.getItem("pick.rpc") || "https://rpc.testnet.near.org",
   coin: localStorage.getItem("pick.coin") || "coin.testnet",
   passport: localStorage.getItem("pick.passport") || "passport.testnet",
   gas: "150000000000000",
@@ -118,9 +119,11 @@ const CFG = {
 document.getElementById("net").textContent = CFG.networkId;
 document.getElementById("cfg-coin").value = CFG.coin;
 document.getElementById("cfg-passport").value = CFG.passport;
+document.getElementById("cfg-rpc").value = CFG.rpcUrl;
 document.getElementById("cfg-save").onclick = () => {
   localStorage.setItem("pick.coin", document.getElementById("cfg-coin").value.trim());
   localStorage.setItem("pick.passport", document.getElementById("cfg-passport").value.trim());
+  localStorage.setItem("pick.rpc", document.getElementById("cfg-rpc").value.trim());
   location.reload();
 };
 
@@ -186,13 +189,23 @@ async function initWallet() {
     });
     const state = selector.store.getState();
     accountId = state.accounts[0]?.accountId ?? null;
-    selector.store.subscribe(({ accounts }) => {
+    // store API differs across wallet-selector versions: rxjs observable in v8,
+    // plain subscribe() in older builds
+    const onStore = (cb) => {
+      if (typeof selector.store.subscribe === "function") selector.store.subscribe(cb);
+      else if (selector.store.observable?.subscribe) selector.store.observable.subscribe(cb);
+      else if (typeof selector.on === "function") {
+        selector.on("signedIn", cb); selector.on("signedOut", cb);
+      }
+    };
+    onStore(({ accounts }) => {
       accountId = accounts[0]?.accountId ?? null;
       renderAccount(); refresh();
     });
     renderAccount();
   } catch (e) {
     console.error("wallet init failed", e);
+    window.__pickErr = String((e && e.stack) || e);
     toast("wallet lib failed to load — read-only mode");
   }
 }
@@ -205,21 +218,28 @@ function renderAccount() {
 
 document.getElementById("account").onclick = async () => {
   if (!selector) return toast("wallet lib not loaded");
-  if (accountId) {
-    await selector.signOut();
-  } else {
-    await selector.signIn({ walletId: "my-near-wallet" });
+  try {
+    if (accountId) {
+      const wallet = await selector.wallet();
+      await wallet.signOut();
+    } else {
+      const wallet = await selector.wallet("my-near-wallet");
+      await wallet.signIn({ contractIds: [] });
+    }
+  } catch (e) {
+    toast("wallet error: " + (e.message || e));
   }
 };
 
 async function send(contract, method, args) {
   if (!accountId) { toast("connect a wallet first"); return; }
   try {
-    const res = await selector.signAndSendTransaction({
+    const wallet = await selector.wallet();
+    const res = await wallet.signAndSendTransaction({
       receiverId: contract,
       actions: [{ type: "FunctionCall", params: { methodName: method, args, gas: CFG.gas, deposit: "0" } }],
     });
-    if (res && res.some((r) => r.type === "TransactionResult" && !r.success)) {
+    if (res && res.status && res.status.Failure) {
       toast("transaction failed — check wallet");
     } else {
       toast("transaction sent: " + method);
@@ -350,10 +370,11 @@ async function renderBoard() {
 async function renderLog() {
   const rows = await view(CFG.coin, "get_history", { limit: 30 }).catch(() => []);
   const tb = document.querySelector("#log tbody");
+  const noEvent = (id) => (typeof id === "number" ? id > 1e15 : String(id).length > 15);
   tb.innerHTML = rows.slice().reverse().map((r) => `
     <tr><td class="dim">${when(r.ts)}</td><td>${r.kind}</td>
     <td>${r.account === accountId ? "<b>you</b>" : short(r.account)}</td>
-    <td class="dim">${r.event_id === "18446744073709551615" ? "—" : "#" + r.event_id}</td>
+    <td class="dim">${noEvent(r.event_id) ? "—" : "#" + r.event_id}</td>
     <td>${fmt(r.amount)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="dim">empty log</td></tr>`;
 }
@@ -371,7 +392,9 @@ async function refresh() {
   await Promise.allSettled([renderStats(), renderBoard(), renderLog()]);
 }
 
-window.__pick = { CFG, view, fmt, refresh };
+window.__pick = { CFG, view, fmt, refresh, renderStats, renderBoard, renderLog, renderEvents,
+  get selector() { return selector; },
+  get accountId() { return accountId; } };
 
 await initWallet();
 await refresh();
