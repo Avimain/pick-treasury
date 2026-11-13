@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near, AccountId, Gas, NearToken, PanicOnDefault};
+use near_sdk::{
+    env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseResult,
+};
 
 use uint::construct_uint;
 
@@ -141,6 +143,7 @@ pub enum LogKind {
     Refund,
     Sweep,
     Register,
+    Unregister,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Serialize, Deserialize)]
@@ -260,6 +263,28 @@ struct RecordResultArgs {
 }
 
 // ---------------------------------------------------------------------------
+// NEP-145 storage-management types
+// ---------------------------------------------------------------------------
+
+/// Minimum NEAR an account must deposit to register for transfers.
+/// Covers the ledger entry the account will occupy.
+pub const STORAGE_MIN: u128 = 5_000_000_000_000_000_000_000; // 0.005 NEAR
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct StorageBalance {
+    pub total: U128,
+    pub available: U128,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct StorageBalanceBounds {
+    pub min: U128,
+    pub max: Option<U128>,
+}
+
+// ---------------------------------------------------------------------------
 // contract
 // ---------------------------------------------------------------------------
 
@@ -279,6 +304,10 @@ pub struct Coin {
     pub has_passport: HashMap<AccountId, bool>,
     pub users: Vec<AccountId>,
     pub history: Vec<LogEntry>,
+    /// NEP-145: yoctoNEAR each registered account has deposited for storage.
+    /// Invariant: env::account_balance() >= storage_total.
+    pub storage: HashMap<AccountId, u128>,
+    pub storage_total: u128,
 }
 
 #[near]
@@ -313,21 +342,135 @@ impl Coin {
             has_passport: HashMap::new(),
             users: Vec::new(),
             history: Vec::new(),
+            storage: HashMap::new(),
+            storage_total: 0,
         }
     }
 
     // -----------------------------------------------------------------
-    // NEP-141 fungible token (subset)
+    // NEP-141 fungible token
     // -----------------------------------------------------------------
 
+    /// Transfers require both accounts registered via NEP-145 (`storage_deposit`).
     pub fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>) {
-        assert_eq!(env::attached_deposit(), NearToken::from_yoctonear(0), "no deposit expected");
+        assert_eq!(
+            env::attached_deposit(),
+            NearToken::from_yoctonear(0),
+            "no deposit expected"
+        );
         assert!(amount.0 > 0, "zero amount");
         let sender = env::predecessor_account_id();
+        self.assert_registered(&sender);
+        self.assert_registered(&receiver_id);
         self.internal_transfer(&sender, &receiver_id, amount.0, true);
         if let Some(m) = memo {
             env::log_str(&format!("Memo: {} ({} -> {})", m, sender, receiver_id));
         }
+    }
+
+    /// NEP-141 transfer-and-call: moves tokens (with the usual tax), then calls
+    /// `ft_on_transfer` on the receiver and settles the unused portion back
+    /// through the `ft_resolve_transfer` callback. Refunds are internal
+    /// (untaxed) and capped by what the receiver actually received — so the
+    /// transfer tax is charged once and is not undone by a refund.
+    pub fn ft_transfer_call(
+        &mut self,
+        receiver_id: AccountId,
+        amount: U128,
+        memo: Option<String>,
+        msg: String,
+    ) -> Promise {
+        assert_eq!(
+            env::attached_deposit(),
+            NearToken::from_yoctonear(0),
+            "no deposit expected"
+        );
+        assert!(amount.0 > 0, "zero amount");
+        let sender = env::predecessor_account_id();
+        self.assert_registered(&sender);
+        self.assert_registered(&receiver_id);
+        let tax = self.internal_transfer(&sender, &receiver_id, amount.0, true);
+        let _received = amount.0 - tax;
+        if let Some(m) = memo {
+            env::log_str(&format!("Memo: {} ({} -> {})", m, sender, receiver_id));
+        }
+
+        let on_transfer_args = near_sdk::serde_json::json!({
+            "sender_id": sender,
+            "amount": U128(amount.0),
+            "msg": msg,
+        })
+        .to_string()
+        .into_bytes();
+        let resolve_args = near_sdk::serde_json::json!({
+            "sender_id": sender,
+            "receiver_id": receiver_id,
+            "amount": U128(amount.0),
+        })
+        .to_string()
+        .into_bytes();
+
+        // ft_on_transfer may fail (missing method, panic) — the callback still
+        // runs and treats that as "everything unused", refunding in full.
+        Promise::new(receiver_id).function_call(
+            "ft_on_transfer".to_string(),
+            on_transfer_args,
+            NearToken::from_yoctonear(0),
+            Gas::from_tgas(35),
+        )
+        .then(Promise::new(env::current_account_id()).function_call(
+            "ft_resolve_transfer".to_string(),
+            resolve_args,
+            NearToken::from_yoctonear(0),
+            Gas::from_tgas(20),
+        ))
+    }
+
+    /// Callback for `ft_transfer_call`. Returns the amount refunded to the
+    /// sender. Only reachable as a promise continuation: a direct call has no
+    /// promise result (and a non-contract predecessor fails the first check).
+    pub fn ft_resolve_transfer(
+        &mut self,
+        sender_id: AccountId,
+        receiver_id: AccountId,
+        amount: U128,
+    ) -> U128 {
+        assert_eq!(
+            env::predecessor_account_id(),
+            env::current_account_id(),
+            "callback only"
+        );
+        assert_eq!(env::promise_results_count(), 1, "missing ft_on_transfer result");
+
+        let contract_id = env::current_account_id();
+        let is_operational = sender_id == contract_id || receiver_id == contract_id;
+        let received = if is_operational {
+            amount.0
+        } else {
+            amount.0 - mul_div(amount.0, self.params.transfer_tax_bps as u128, BPS)
+        };
+
+        // Successful result -> unused amount as declared by the receiver
+        // (accepts both JSON encodings: "4000" and 4000). Failed result ->
+        // refund everything the receiver got.
+        let unused: u128 = match env::promise_result(0) {
+            PromiseResult::Successful(bytes) => {
+                near_sdk::serde_json::from_slice::<U128>(&bytes)
+                    .map(|u| u.0)
+                    .or_else(|_| near_sdk::serde_json::from_slice::<u128>(&bytes))
+                    .unwrap_or(received)
+            }
+            PromiseResult::Failed => received,
+        };
+
+        let refund = unused
+            .min(received)
+            .min(self.balances.get(&receiver_id).copied().unwrap_or(0));
+        if refund == 0 {
+            return U128(0);
+        }
+        self.internal_transfer(&receiver_id, &sender_id, refund, false);
+        U128(refund)
     }
 
     pub fn ft_balance_of(&self, account_id: AccountId) -> U128 {
@@ -342,7 +485,138 @@ impl Coin {
         self.meta.clone()
     }
 
-    fn internal_transfer(&mut self, from: &AccountId, to: &AccountId, amount: u128, taxed: bool) {
+    // -----------------------------------------------------------------
+    // NEP-145 storage management
+    // -----------------------------------------------------------------
+
+    pub fn storage_balance_bounds(&self) -> StorageBalanceBounds {
+        StorageBalanceBounds {
+            min: U128(STORAGE_MIN),
+            max: None,
+        }
+    }
+
+    pub fn storage_balance_of(&self, account_id: AccountId) -> Option<StorageBalance> {
+        self.storage.get(&account_id).map(|&total| StorageBalance {
+            total: U128(total),
+            available: U128(total.saturating_sub(STORAGE_MIN)),
+        })
+    }
+
+    /// Register `account_id` (default: caller) by depositing NEAR for the
+    /// ledger entry. Deposits below `min` panic. Re-depositing tops up
+    /// `available`; `registration_only` on an existing account refunds.
+    pub fn storage_deposit(
+        &mut self,
+        account_id: Option<AccountId>,
+        registration_only: Option<bool>,
+    ) -> StorageBalance {
+        let attached = env::attached_deposit().as_yoctonear();
+        let target = account_id.unwrap_or_else(env::predecessor_account_id);
+        let registration_only = registration_only.unwrap_or(false);
+
+        if let Some(&existing) = self.storage.get(&target) {
+            if registration_only {
+                // already registered: nothing to do, return the deposit
+                if attached > 0 {
+                    let _ = Promise::new(env::predecessor_account_id())
+                        .transfer(NearToken::from_yoctonear(attached));
+                }
+                return StorageBalance {
+                    total: U128(existing),
+                    available: U128(existing.saturating_sub(STORAGE_MIN)),
+                };
+            }
+            assert!(attached > 0, "top-up deposit is zero");
+            *self.storage.get_mut(&target).expect("storage") += attached;
+            self.storage_total += attached;
+        } else {
+            assert!(
+                attached >= STORAGE_MIN,
+                "attached deposit is below min storage balance"
+            );
+            self.storage.insert(target.clone(), attached);
+            self.storage_total += attached;
+        }
+        self.assert_near_solvency();
+        let total = self.storage.get(&target).copied().unwrap_or(0);
+        StorageBalance {
+            total: U128(total),
+            available: U128(total.saturating_sub(STORAGE_MIN)),
+        }
+    }
+
+    /// Returns up to `amount` (default: all) of the withdrawable deposit.
+    pub fn storage_withdraw(&mut self, amount: Option<U128>) -> StorageBalance {
+        assert_eq!(
+            env::attached_deposit(),
+            NearToken::from_yoctonear(0),
+            "no deposit expected"
+        );
+        let user = env::predecessor_account_id();
+        let total = *self.storage.get(&user).expect("not registered");
+        let available = total.saturating_sub(STORAGE_MIN);
+        let want = amount.map(|a| a.0).unwrap_or(available);
+        assert!(want <= available, "amount exceeds available storage balance");
+        if want > 0 {
+            self.storage.insert(user.clone(), total - want);
+            self.storage_total -= want;
+            let _ = Promise::new(user).transfer(NearToken::from_yoctonear(want));
+        }
+        let new_total = total - want;
+        StorageBalance {
+            total: U128(new_total),
+            available: U128(new_total.saturating_sub(STORAGE_MIN)),
+        }
+    }
+
+    /// Unregister and get the NEAR deposit back. Refuses while a balance
+    /// exists unless `force`; force-burning destroys the account's $PICK
+    /// (reducing total supply) and logs it.
+    pub fn storage_unregister(&mut self, force: Option<bool>) -> bool {
+        assert_eq!(
+            env::attached_deposit(),
+            NearToken::from_yoctonear(0),
+            "no deposit expected"
+        );
+        let force = force.unwrap_or(false);
+        let user = env::predecessor_account_id();
+        let Some(&deposit) = self.storage.get(&user) else {
+            return false;
+        };
+        let balance = self.balances.get(&user).copied().unwrap_or(0);
+        if balance > 0 {
+            assert!(force, "account has a $PICK balance; burn it with force");
+            self.total_supply -= balance;
+            self.balances.remove(&user);
+            self.push_log(LogKind::Unregister, user.clone(), u64::MAX, U128(balance));
+        } else {
+            self.balances.remove(&user);
+        }
+        self.storage.remove(&user);
+        self.storage_total -= deposit;
+        if deposit > 0 {
+            let _ = Promise::new(user).transfer(NearToken::from_yoctonear(deposit));
+        }
+        true
+    }
+
+    fn assert_registered(&self, account: &AccountId) {
+        assert!(
+            self.storage.contains_key(account),
+            "account not registered — call storage_deposit first (NEP-145)"
+        );
+    }
+
+    fn assert_near_solvency(&self) {
+        assert!(
+            env::account_balance().as_yoctonear() >= self.storage_total,
+            "contract NEAR below storage obligations"
+        );
+    }
+
+    /// Returns the tax taken (0 when exempt).
+    fn internal_transfer(&mut self, from: &AccountId, to: &AccountId, amount: u128, taxed: bool) -> u128 {
         let contract_id = env::current_account_id();
         let is_operational = from == &contract_id || to == &contract_id;
         let (tax, burn) = if taxed && !is_operational {
@@ -361,6 +635,7 @@ impl Coin {
         if burn > 0 {
             self.push_log(LogKind::Tax, from.clone(), u64::MAX, U128(burn));
         }
+        tax
     }
 
     // -----------------------------------------------------------------
@@ -573,11 +848,13 @@ impl Coin {
                     if st.streak > st.best {
                         st.best = st.streak;
                     }
+                    // mirror the win immediately — the passport record must not
+                    // depend on the winner ever calling claim() (the payout is
+                    // filled in later by claim's own record_result)
+                    self.record_result(user.clone(), event_id, 1, 0);
                 } else {
                     st.losses += 1;
                     st.streak = 0;
-                }
-                if !correct {
                     self.record_result(user.clone(), event_id, 0, 0);
                 }
             }
@@ -895,7 +1172,7 @@ impl Coin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::test_utils::{accounts, testing_env_with_promise_results, VMContextBuilder};
     use near_sdk::testing_env;
 
     const DAY: u64 = 86_400;
@@ -926,6 +1203,22 @@ mod tests {
             .predecessor_account_id(pred)
             .block_timestamp(now * 1_000_000_000);
         testing_env!(b.build());
+    }
+
+    fn set_dep(pred: AccountId, now: u64, deposit: u128) {
+        let mut b = VMContextBuilder::new();
+        b.current_account_id(contract())
+            .predecessor_account_id(pred)
+            .attached_deposit(NearToken::from_yoctonear(deposit))
+            .block_timestamp(now * 1_000_000_000);
+        testing_env!(b.build());
+    }
+
+    /// NEP-145 registration (required before ft_transfer).
+    fn register(c: &mut Coin, user: AccountId, now: u64) {
+        set_dep(user.clone(), now, STORAGE_MIN);
+        c.storage_deposit(None, None);
+        set(user, now);
     }
 
     fn meta() -> FtMetadata {
@@ -975,6 +1268,8 @@ mod tests {
     #[test]
     fn transfer_tax_burns_and_fills_treasury() {
         let mut c = init();
+        register(&mut c, alice(), 1_500);
+        register(&mut c, bob(), 1_500);
         set(alice(), 2_000);
         c.ft_transfer(bob(), U128(10_000), None);
         // 1% tax = 100, half burned (50), half to treasury (50)
@@ -992,6 +1287,8 @@ mod tests {
         let now = 1_000u64;
 
         // fund bob: tax 500 (500 burned into treasury)
+        register(&mut c, alice(), now);
+        register(&mut c, bob(), now);
         set(alice(), now);
         c.ft_transfer(bob(), U128(50_000), None);
 
@@ -1064,6 +1361,8 @@ mod tests {
         let now = 1_000u64;
         set(resolver(), now);
         let id = c.create_event("q".into(), "A".into(), "B".into(), now + DAY, now + 2 * DAY);
+        register(&mut c, alice(), now);
+        register(&mut c, bob(), now);
         set(alice(), now);
         c.ft_transfer(bob(), U128(10_000), None);
         set(alice(), now + 10);
@@ -1094,6 +1393,9 @@ mod tests {
 
         // build treasury: alice funds bob (tax 500, burn 250) and carol
         // (tax 1_000, burn 500) -> free treasury 750
+        register(&mut c, alice(), now);
+        register(&mut c, bob(), now);
+        register(&mut c, carol(), now);
         set(alice(), now);
         c.ft_transfer(bob(), U128(50_000), None);
         c.ft_transfer(carol(), U128(100_000), None);
@@ -1114,5 +1416,298 @@ mod tests {
         let st = c.get_stats(alice()).unwrap();
         assert_eq!(st.tier, "TRADER");
         assert_invariants(&c);
+    }
+
+    // -----------------------------------------------------------------
+    // NEP-141/145 compliance
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ft_transfer_requires_registration() {
+        let mut c = init();
+        register(&mut c, alice(), 1_500);
+        // bob is NOT registered
+        set(alice(), 2_000);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.ft_transfer(bob(), U128(100), None)
+        }));
+        assert!(res.is_err(), "unregistered receiver must panic");
+
+        register(&mut c, bob(), 1_500);
+        set(alice(), 2_000);
+        c.ft_transfer(bob(), U128(100), None);
+        assert_eq!(c.ft_balance_of(bob()).0, 99); // 1% tax = 1, half burned
+        assert_invariants(&c);
+    }
+
+    #[test]
+    fn storage_deposit_withdraw_unregister_flow() {
+        let mut c = init();
+
+        // below min panics
+        set_dep(alice(), 1_500, STORAGE_MIN - 1);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.storage_deposit(None, None)
+        }));
+        assert!(res.is_err());
+
+        // register at min
+        set_dep(alice(), 1_501, STORAGE_MIN);
+        let sb = c.storage_deposit(None, None);
+        assert_eq!(sb.total.0, STORAGE_MIN);
+        assert_eq!(sb.available.0, 0);
+
+        // top-up
+        set_dep(alice(), 1_502, 2 * STORAGE_MIN);
+        let sb = c.storage_deposit(Some(alice()), Some(false));
+        assert_eq!(sb.total.0, 3 * STORAGE_MIN);
+        assert_eq!(sb.available.0, 2 * STORAGE_MIN);
+
+        // registration_only on an existing account is a no-op refund
+        set_dep(alice(), 1_503, STORAGE_MIN);
+        let sb = c.storage_deposit(Some(alice()), Some(true));
+        assert_eq!(sb.total.0, 3 * STORAGE_MIN);
+
+        // withdraw all available, keeps min locked
+        set(alice(), 1_504);
+        let w = c.storage_withdraw(None);
+        assert_eq!(w.total.0, STORAGE_MIN);
+        assert_eq!(w.available.0, 0);
+
+        // balances non-zero -> unregister must be forced (burns)
+        assert!(c.storage_balance_of(alice()).is_some());
+        set(alice(), 1_505);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.storage_unregister(None)));
+        assert!(res.is_err(), "unregister with balance must panic without force");
+
+        set(alice(), 1_506);
+        assert!(c.storage_unregister(Some(true)));
+        assert!(c.storage_balance_of(alice()).is_none());
+        assert_eq!(c.ft_total_supply().0, 0); // force-unregister burned alice's holdings
+        assert_eq!(c.storage_total, 0);
+        assert_invariants(&c);
+    }
+
+    #[test]
+    fn transfer_call_moves_tokens_and_resolves_refund() {
+        let mut c = init();
+        register(&mut c, alice(), 1_500);
+        register(&mut c, bob(), 1_500);
+        set(alice(), 2_000);
+
+        let promise = c.ft_transfer_call(bob(), U128(10_000), None, "do something".into());
+        drop(promise); // unit-test env: promise chain is mocked, state effect stands
+        assert_eq!(c.ft_balance_of(bob()).0, 9_900); // taxed on arrival
+        assert_invariants(&c);
+
+        // callback: receiver declares 4_000 unused -> refunded untaxed to sender
+        let mut b = VMContextBuilder::new();
+        b.current_account_id(contract())
+            .predecessor_account_id(contract())
+            .block_timestamp(2_100 * 1_000_000_000);
+        testing_env_with_promise_results(b.build(), PromiseResult::Successful(b"4000".to_vec()));
+        let refunded = c.ft_resolve_transfer(alice(), bob(), U128(10_000)).0;
+        assert_eq!(refunded, 4_000);
+        assert_eq!(c.ft_balance_of(alice()).0, 1_000_000_000 - 10_000 + 4_000);
+        assert_eq!(c.ft_balance_of(bob()).0, 5_900);
+        assert_invariants(&c);
+    }
+
+    #[test]
+    fn resolve_transfer_full_refund_when_receiver_fails() {
+        let mut c = init();
+        register(&mut c, alice(), 1_500);
+        register(&mut c, bob(), 1_500);
+        set(alice(), 2_000);
+        c.ft_transfer(bob(), U128(10_000), None); // bob has 9_900
+
+        let mut b = VMContextBuilder::new();
+        b.current_account_id(contract())
+            .predecessor_account_id(contract())
+            .block_timestamp(2_100 * 1_000_000_000);
+        // failed ft_on_transfer -> refund everything the receiver received
+        testing_env_with_promise_results(b.build(), PromiseResult::Failed);
+        let refunded = c.ft_resolve_transfer(alice(), bob(), U128(10_000)).0;
+        assert_eq!(refunded, 9_900);
+        assert_eq!(c.ft_balance_of(bob()).0, 0);
+        assert_invariants(&c);
+    }
+
+    #[test]
+    fn resolve_transfer_direct_call_panics() {
+        let mut c = init();
+        register(&mut c, alice(), 1_500);
+        register(&mut c, bob(), 1_500);
+        // called directly (predecessor = alice, no promise result): must panic
+        set(alice(), 2_000);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.ft_resolve_transfer(alice(), bob(), U128(10_000))
+        }));
+        assert!(res.is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // randomized lifecycle: invariants after every action
+    // -----------------------------------------------------------------
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // xorshift-style finalizer: raw LCG low bits are badly correlated
+        // (without this the test's roll sequence locks into a 4/5 cycle and
+        // never exercises transfers)
+        let mut x = *seed;
+        x ^= x >> 30;
+        x ^= x << 27;
+        x ^= x >> 31;
+        x
+    }
+
+    #[test]
+    fn randomized_lifecycle_preserves_invariants() {
+        let mut c = init();
+        let base = 1_000u64;
+        let day = 86_400u64;
+        let users = [alice(), bob(), carol()];
+        for u in &users {
+            register(&mut c, u.clone(), base);
+        }
+        register(&mut c, resolver(), base);
+        register(&mut c, passport(), base);
+
+        set(resolver(), base);
+        let e0 = c.create_event("open event".into(), "A".into(), "B".into(), base + 100_000 * day, base + 200_000 * day);
+        let e1 = c.create_event("single-sided".into(), "A".into(), "B".into(), base + 100_000 * day, base + 200_000 * day);
+
+        // seed both sides of e0 so it resolves (not voids), and fund the
+        // underfunded accounts so transfers/stakes can actually happen
+        set(alice(), base);
+        c.ft_transfer(bob(), U128(50_000), None);
+        c.ft_transfer(carol(), U128(50_000), None);
+        set(alice(), base);
+        c.stake(e0, 0, U128(100));
+        set(bob(), base);
+        c.stake(e0, 1, U128(100));
+
+        let mut seed = 0x5EEDu64;
+        for i in 0..300u64 {
+            let now = base + i * 3_600;
+            let roll = lcg(&mut seed) % 8;
+            let u1 = users[(lcg(&mut seed) % 3) as usize].clone();
+            let u2 = users[(lcg(&mut seed) % 3) as usize].clone();
+
+            // lifecycle events at fixed rounds
+            if i == 150 {
+                set(resolver(), now);
+                c.resolve(e0, 0);
+            }
+            if i == 180 {
+                set(resolver(), now);
+                c.resolve(e1, 1); // single side staked -> Void
+            }
+
+            set(u1.clone(), now);
+            match roll {
+                0 => {
+                    let amount = (lcg(&mut seed) % 5_000 + 1) as u128;
+                    if u1 != u2 && c.ft_balance_of(u1.clone()).0 >= amount {
+                        c.ft_transfer(u2.clone(), U128(amount), None);
+                    }
+                }
+                1 => {
+                    let amount = (lcg(&mut seed) % 3_000 + 1) as u128;
+                    let open = matches!(c.get_event(e0).unwrap().status, Status::Open);
+                    if open && c.ft_balance_of(u1.clone()).0 >= amount {
+                        let side = match c.get_pick(u1.clone(), e0) {
+                            Some(p) => p.side,
+                            None => (lcg(&mut seed) % 2) as u8,
+                        };
+                        c.stake(e0, side, U128(amount));
+                    }
+                }
+                2 => {
+                    if let (Some(p), Status::Resolved { winner, .. }) =
+                        (c.get_pick(u1.clone(), e0), c.get_event(e0).unwrap().status)
+                    {
+                        if p.side == winner && !p.claimed {
+                            c.claim(e0);
+                        }
+                    }
+                }
+                3 => {
+                    // alice keeps the second event single-sided on purpose
+                    if u1 == alice() {
+                        let amount = (lcg(&mut seed) % 2_000 + 1) as u128;
+                        let open = matches!(c.get_event(e1).unwrap().status, Status::Open);
+                        if open && c.ft_balance_of(alice()).0 >= amount {
+                            c.stake(e1, 0, U128(amount));
+                        }
+                    }
+                }
+                4 => {
+                    if let (Some(p), Status::Void { .. }) =
+                        (c.get_pick(u1.clone(), e1), c.get_event(e1).unwrap().status)
+                    {
+                        if !p.refunded {
+                            c.refund(e1);
+                        }
+                    }
+                }
+                5 => {
+                    let target = users[(lcg(&mut seed) % 3) as usize].clone();
+                    let ev = if lcg(&mut seed) % 2 == 0 { e0 } else { e1 };
+                    if let Some(p) = c.get_pick(target.clone(), ev) {
+                        if !p.settled
+                            && !matches!(c.get_event(ev).unwrap().status, Status::Open)
+                        {
+                            c.settle_for(target, ev);
+                        }
+                    }
+                }
+                6 => {
+                    // NEP-145: top-up then withdraw
+                    set_dep(u1.clone(), now, 1_000);
+                    c.storage_deposit(None, None);
+                    set(u1.clone(), now);
+                    let _ = c.storage_withdraw(None);
+                }
+                _ => {
+                    let amount = (lcg(&mut seed) % 4_000 + 1) as u128;
+                    if u1 != u2 && c.ft_balance_of(u1.clone()).0 >= amount {
+                        let p = c.ft_transfer_call(u2.clone(), U128(amount), None, "x".into());
+                        drop(p);
+                    }
+                }
+            }
+            assert_invariants(&c);
+            assert!(
+                env::account_balance().as_yoctonear() >= c.storage_total,
+                "NEAR solvency broken at round {i}"
+            );
+        }
+
+        // post-loop: sweep after the claim window (permissionless)
+        assert!(matches!(
+            c.get_event(e0).unwrap().status,
+            Status::Resolved { .. }
+        ));
+        set(carol(), base + 150 * 3_600 + 91 * day);
+        c.sweep(e0);
+        assert!(c.get_event(e0).unwrap().swept);
+        assert_invariants(&c);
+
+        // force-unregister a funded account: burn + NEAR refund, still solvent
+        set(carol(), base + 150 * 3_600 + 92 * day);
+        let _ = c.storage_unregister(Some(true));
+        assert!(c.storage_balance_of(carol()).is_none());
+        assert_invariants(&c);
+
+        // the lifecycle produced real log entries (stakes, tax burns, resolution)
+        let hist = c.get_history(HISTORY_CAP as u32);
+        assert!(hist.len() > 10);
+        assert!(hist
+            .iter()
+            .any(|e| matches!(e.kind, LogKind::Resolve | LogKind::Void)));
     }
 }

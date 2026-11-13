@@ -61,6 +61,7 @@
   <span class="dim">parimutuel treasury · prediction passport</span>
   <span class="grow"></span>
   <span id="net" class="dim"></span>
+  <span id="demo-badge" class="badge" style="display:none;color:var(--amber);border-color:var(--amber)">DEMO · read-only</span>
   <button id="account" class="primary">connect wallet</button>
 </header>
 
@@ -77,6 +78,15 @@
   <section>
     <h2>Open &amp; recent events</h2>
     <div id="events" class="dim">loading…</div>
+  </section>
+
+  <section id="passport-section" style="display:none">
+    <h2>My Passport — pick history &amp; tier</h2>
+    <div id="pp-summary" class="dim" style="margin-bottom:10px"></div>
+    <table id="pp-records">
+      <thead><tr><th>event</th><th>side</th><th>staked</th><th>result</th><th>payout</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </section>
 
   <section>
@@ -107,6 +117,9 @@
 
 <script type="module">
 // ---------------------------------------------------------------- config
+const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+const DEMO_USER = "demo.testnet";
+
 const CFG = {
   networkId: "testnet",
   rpcUrl: localStorage.getItem("pick.rpc") || "https://rpc.testnet.near.org",
@@ -117,6 +130,11 @@ const CFG = {
 };
 
 document.getElementById("net").textContent = CFG.networkId;
+if (DEMO) {
+  document.getElementById("demo-badge").style.display = "inline-block";
+  document.getElementById("account").textContent = DEMO_USER;
+  document.getElementById("account").disabled = true;
+}
 document.getElementById("cfg-coin").value = CFG.coin;
 document.getElementById("cfg-passport").value = CFG.passport;
 document.getElementById("cfg-rpc").value = CFG.rpcUrl;
@@ -127,6 +145,82 @@ document.getElementById("cfg-save").onclick = () => {
   location.reload();
 };
 
+// ---------------------------------------------------------------- demo mode
+// ?demo=1 serves everything below from embedded fixtures: no RPC, no wallet,
+// writes disabled (send() refuses). For screenshots/judges who just want to
+// see the UI; the live page behaves identically against testnet.
+const DEMO_NOW = Math.floor(Date.now() / 1000);
+const DEMO_DATA = {
+  ft_total_supply: "1000000000000000000",
+  free_treasury: "750000000000",
+  ft_metadata: { spec: "ft-1.0.0", name: "$PICK", symbol: "PICK", icon: null,
+                 decimals: 9, reference: null, reference_hash: null },
+  get_events: [
+    { id: 0, question: "Will the $PICK demo ship before 14 Nov 2026?",
+      side_a: "YES", side_b: "NO", close_ts: DEMO_NOW + 86_400,
+      resolve_deadline: DEMO_NOW + 172_800, status: { Open: null },
+      stake_a: "420000000000", stake_b: "180000000000", winner_pool: "0",
+      winner_total: "0", paid_out: "0", swept: false },
+    { id: 1, question: "BTC above $100k this week?",
+      side_a: "YES", side_b: "NO", close_ts: DEMO_NOW - 172_800,
+      resolve_deadline: DEMO_NOW - 86_400,
+      status: { Resolved: { winner: 0, resolve_ts: DEMO_NOW - 86_400 } },
+      stake_a: "1000000000000", stake_b: "500000000000",
+      winner_pool: "1410000000000", winner_total: "1000000000000",
+      paid_out: "0", swept: false },
+    { id: 2, question: "Will anyone stake event #2? (one-sided test)",
+      side_a: "A", side_b: "B", close_ts: DEMO_NOW - 259_200,
+      resolve_deadline: DEMO_NOW - 172_800, status: { Void: { void_ts: DEMO_NOW - 172_800 } },
+      stake_a: "700000000000", stake_b: "0", winner_pool: "0",
+      winner_total: "0", paid_out: "0", swept: false },
+  ],
+  get_leaderboard: [
+    { account: "alice.testnet", streak: 7, best: 9, wins: 12, losses: 4, tier: "ORACLE" },
+    { account: "bob.testnet", streak: 3, best: 5, wins: 6, losses: 6, tier: "TRADER" },
+    { account: "carol.testnet", streak: 1, best: 2, wins: 2, losses: 1, tier: "ROOKIE" },
+  ],
+  get_history: [
+    { ts: DEMO_NOW - 30, kind: "stake", account: "alice.testnet", event_id: 0, amount: "420000000000" },
+    { ts: DEMO_NOW - 60, kind: "tax", account: "bob.testnet", event_id: 18446744073709551615, amount: "5000000000" },
+    { ts: DEMO_NOW - 90, kind: "resolve", account: "resolver.testnet", event_id: 1, amount: "1410000000000" },
+    { ts: DEMO_NOW - 120, kind: "claim", account: "alice.testnet", event_id: 1, amount: "1410000000000" },
+    { ts: DEMO_NOW - 150, kind: "void", account: "anyone.testnet", event_id: 2, amount: "0" },
+  ],
+  get_stats: { streak: 3, best: 5, wins: 6, losses: 2, picks: 8, has_passport: true, tier: "TRADER" },
+  ft_balance_of: "420000000000",
+  is_minted: true,
+  get_summary: { picks: 10, resolved: 9, wins: 6, losses: 2, voids: 1,
+                 streak: 3, best: 5, tier: "TRADER" },
+  get_records: [
+    { event_id: 0, side: 1, amount: "50000000000", outcome: null, payout: "0" },
+    { event_id: 1, side: 0, amount: "200000000000", outcome: 1, payout: "282000000000" },
+    { event_id: 2, side: 0, amount: "700000000000", outcome: 2, payout: "700000000000" },
+    { event_id: 3, side: 1, amount: "100000000000", outcome: 0, payout: "0" },
+    { event_id: 4, side: 0, amount: "80000000000", outcome: 1, payout: "115000000000" },
+    { event_id: 5, side: 0, amount: "60000000000", outcome: 1, payout: "91000000000" },
+    { event_id: 6, side: 1, amount: "40000000000", outcome: 0, payout: "0" },
+    { event_id: 7, side: 0, amount: "30000000000", outcome: 1, payout: "47000000000" },
+    { event_id: 8, side: 0, amount: "20000000000", outcome: 1, payout: "33000000000" },
+    { event_id: 9, side: 1, amount: "25000000000", outcome: 1, payout: "38000000000" },
+  ],
+  get_pick: { // keyed by event_id — demo user's picks
+    0: { side: 1, amount: "50000000000", settled: false, claimed: false, refunded: false },
+    1: { side: 0, amount: "200000000000", settled: true, claimed: true, refunded: false },
+    2: { side: 0, amount: "700000000000", settled: true, claimed: false, refunded: true },
+  },
+};
+
+function demoView(method, args) {
+  if (method === "get_pick") {
+    const p = DEMO_DATA.get_pick[args.event_id];
+    return p ? { event_id: args.event_id, ...p } : null;
+  }
+  // demo mode has exactly one user (DEMO_USER): per-user views always
+  // answer for them, whatever the arg field is called
+  if (method in DEMO_DATA) return DEMO_DATA[method];
+  throw new Error(`demo mode: no fixture for ${method}`);
+}
+
 // ---------------------------------------------------------------- helpers
 function toast(msg, ms = 4000) {
   const el = document.getElementById("toast");
@@ -135,6 +229,7 @@ function toast(msg, ms = 4000) {
 }
 
 async function view(contract, method, args = {}) {
+  if (DEMO) return demoView(method, args);
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 1500 * attempt));
@@ -232,6 +327,7 @@ document.getElementById("account").onclick = async () => {
 };
 
 async function send(contract, method, args) {
+  if (DEMO) return toast("demo mode — writes disabled (?demo=1 is read-only)");
   if (!accountId) { toast("connect a wallet first"); return; }
   try {
     const wallet = await selector.wallet();
@@ -379,6 +475,48 @@ async function renderLog() {
     || `<tr><td colspan="5" class="dim">empty log</td></tr>`;
 }
 
+async function renderPassport() {
+  const sec = document.getElementById("passport-section");
+  const summaryBox = document.getElementById("pp-summary");
+  const tb = document.querySelector("#pp-records tbody");
+  if (!accountId) {
+    sec.style.display = "none";
+    return;
+  }
+  const [summary, records] = await Promise.all([
+    view(CFG.passport, "get_summary", { user: accountId }).catch(() => null),
+    view(CFG.passport, "get_records", { user: accountId }).catch(() => []),
+  ]);
+  if (!summary && (!records || !records.length)) {
+    summaryBox.innerHTML = accountId === DEMO_USER
+      ? ""
+      : `no passport yet — mint one in the stats bar to start recording picks.`;
+    tb.innerHTML = "";
+    sec.style.display = records && records.length ? "block" : "none";
+    if (!records || !records.length) return;
+  }
+  sec.style.display = "block";
+  if (summary) {
+    summaryBox.innerHTML =
+      `<b>${summary.tier}</b> · ${summary.wins}W / ${summary.losses}L / ${summary.voids}V` +
+      ` · streak <span class="pos">${summary.streak}</span> (best ${summary.best})` +
+      ` · ${summary.picks} picks · ${summary.resolved} resolved`;
+  }
+  const outcomeTag = (o, payout) => {
+    if (o === null || o === undefined) return `<span class="dim">pending</span>`;
+    if (o === 1) return `<span class="pos">WIN</span> <span class="dim">+${fmt(payout)}</span>`;
+    if (o === 0) return `<span class="neg">LOSS</span>`;
+    return `<span class="dim">VOID · refunded</span>`;
+  };
+  tb.innerHTML = (records || []).slice().reverse().map((r) => `
+    <tr><td class="dim">#${r.event_id}</td>
+    <td>${r.side === null || r.side === undefined ? "–" : r.side === 0 ? "side A" : "side B"}</td>
+    <td>${fmt(r.amount)}</td>
+    <td>${outcomeTag(r.outcome, r.payout)}</td>
+    <td>${r.outcome === null || r.outcome === undefined ? "–" : fmt(r.payout)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="dim">no records yet</td></tr>`;
+}
+
 // ---------------------------------------------------------------- loop
 async function refresh() {
   try {
@@ -389,14 +527,20 @@ async function refresh() {
     document.getElementById("events").textContent =
       `cannot reach coin contract "${CFG.coin}" — deploy the wasm and set its address in settings.`;
   }
-  await Promise.allSettled([renderStats(), renderBoard(), renderLog()]);
+  await Promise.allSettled([renderStats(), renderBoard(), renderLog(), renderPassport()]);
 }
 
 window.__pick = { CFG, view, fmt, refresh, renderStats, renderBoard, renderLog, renderEvents,
+  renderPassport, DEMO,
   get selector() { return selector; },
   get accountId() { return accountId; } };
 
-await initWallet();
+if (DEMO) {
+  accountId = DEMO_USER; // demo fixture user — no wallet import needed
+  renderAccount();
+} else {
+  await initWallet();
+}
 await refresh();
 setInterval(refresh, 20_000);
 </script>

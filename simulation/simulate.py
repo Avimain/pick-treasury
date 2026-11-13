@@ -35,6 +35,109 @@ SCENARIOS = {
     "dormant": dict(volume=500_000,    volume_end=100_000,    stake=200_000,   events_pw=2),
 }
 
+# display order + colors for the chart (matches README table order)
+CHART_STYLE = {
+    "viral":   ("#f85149", "viral  (40M peak volume)"),
+    "steady":  ("#3fb950", "steady (9M volume)"),
+    "dormant": ("#58a6ff", "dormant (100k volume)"),
+}
+
+
+def write_svg_chart(all_series, start_supply, width=760, height=420):
+    """Render the 60-day supply chart as SVG using only the stdlib.
+
+    Returns the output path. Kept dependency-free so `python3
+    simulation/simulate.py` always produces a chart judges can open.
+    """
+    import xml.etree.ElementTree as ET
+
+    pad_l, pad_r, pad_t, pad_b = 78, 18, 46, 44
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+
+    # y-range across every scenario, with the initial supply included
+    y_min = min(min(r[1] for r in rows) for rows in all_series.values())
+    y_max = max(start_supply, max(max(r[1] for r in rows) for rows in all_series.values()))
+    span = (y_max - y_min) or 1.0
+    y_min -= span * 0.06
+    y_max += span * 0.06
+    span = y_max - y_min
+
+    days = len(next(iter(all_series.values())))
+    x = lambda d: pad_l + plot_w * (d / (days - 1))
+    y = lambda v: pad_t + plot_h * (1 - (v - y_min) / span)
+
+    svg = ET.Element("svg", {
+        "xmlns": "http://www.w3.org/2000/svg",
+        "width": str(width), "height": str(height),
+        "viewBox": f"0 0 {width} {height}",
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+    })
+    ET.SubElement(svg, "rect", {"width": str(width), "height": str(height),
+                                "fill": "#0d1117"})
+
+    def label(px, py, text, size="11", fill="#8b949e", anchor="start", weight="normal"):
+        t = ET.SubElement(svg, "text", {"x": f"{px:.1f}", "y": f"{py:.1f}",
+                                        "font-size": size, "fill": fill,
+                                        "text-anchor": anchor, "font-weight": weight})
+        t.text = text
+
+    # title + legend
+    label(pad_l, 22, "$PICK supply over 60 days — three scenarios", "13", "#c9d1d9", "start", "bold")
+    lx = pad_l
+    for name, (color, desc) in CHART_STYLE.items():
+        if name in all_series:
+            ET.SubElement(svg, "rect", {"x": f"{lx}", "y": "30", "width": "14",
+                                        "height": "4", "fill": color})
+            label(lx + 19, 37, desc, "10")
+            lx += 19 + 7.0 * len(desc) + 18
+
+    # gridlines + y-axis ticks (5)
+    for i in range(5):
+        v = y_min + span * i / 4
+        yy = y(v)
+        ET.SubElement(svg, "line", {
+            "x1": str(pad_l), "x2": str(width - pad_r),
+            "y1": f"{yy:.1f}", "y2": f"{yy:.1f}",
+            "stroke": "#21262d", "stroke-width": "1",
+        })
+        label(pad_l - 8, yy + 4, f"{v/1e6:.0f}M" if v >= 1e6 else f"{v/1e3:.0f}k",
+              "10", anchor="end")
+
+    # x-axis ticks every 10 days
+    for d in range(0, days, 10):
+        xx = x(d)
+        ET.SubElement(svg, "line", {
+            "x1": f"{xx:.1f}", "x2": f"{xx:.1f}",
+            "y1": str(pad_t), "y2": str(height - pad_b),
+            "stroke": "#161b22", "stroke-width": "1",
+        })
+        label(xx, height - pad_b + 18, f"d{d}", "10", anchor="middle")
+    label(width - pad_r, height - 10, "day →", "10", anchor="end")
+
+    # initial-supply reference line
+    y0 = y(start_supply)
+    ET.SubElement(svg, "line", {
+        "x1": str(pad_l), "x2": str(width - pad_r),
+        "y1": f"{y0:.1f}", "y2": f"{y0:.1f}",
+        "stroke": "#8b949e", "stroke-width": "1", "stroke-dasharray": "5 4",
+    })
+
+    # scenario polylines
+    for name, rows in all_series.items():
+        color = CHART_STYLE.get(name, ("#d29922", name))[0]
+        pts = " ".join(f"{x(r[0]):.1f},{y(r[1]):.1f}" for r in rows)
+        ET.SubElement(svg, "polyline", {
+            "points": pts, "fill": "none", "stroke": color,
+            "stroke-width": "2", "stroke-linejoin": "round",
+        })
+        # end-of-series label with day-60 value
+        end = rows[-1]
+        label(x(end[0]) - 6, y(end[1]) - 7, f"{end[1]/1e6:.1f}M", "10", color, "end", "bold")
+
+    out = os.path.join(os.path.dirname(__file__), "out", "supply.svg")
+    ET.ElementTree(svg).write(out, encoding="unicode", xml_declaration=True)
+    return out
+
 
 def run(name, cfg, rng):
     supply = float(START_SUPPLY)
@@ -97,6 +200,10 @@ def main():
 
     print(f"\ncsv files written to {os.path.join(os.path.dirname(__file__), 'out')}/")
 
+    # --- SVG chart (stdlib only, always runs) -----------------------------
+    svg_path = write_svg_chart(all_series, START_SUPPLY)
+    print(f"chart written to {svg_path}")
+
     try:
         import matplotlib.pyplot as plt
         for name, rows in all_series.items():
@@ -110,7 +217,7 @@ def main():
         plt.savefig(out, dpi=140)
         print(f"chart written to {out}")
     except ImportError:
-        print("(matplotlib not installed — chart skipped, csv data is complete)")
+        print("(matplotlib not installed — using the svg chart above)")
 
 
 if __name__ == "__main__":

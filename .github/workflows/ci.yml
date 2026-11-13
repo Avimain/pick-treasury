@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test
+
+  wasm:
+    name: wasm build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: check
+        run: cargo check --target wasm32-unknown-unknown
+      - name: build release wasm
+        run: cargo build --target wasm32-unknown-unknown --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
+
+  simulation:
+    name: 60-day supply simulation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: run simulation
+        run: python3 simulation/simulate.py

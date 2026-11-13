@@ -214,6 +214,11 @@ impl Passport {
                 if r.outcome.is_none() {
                     r.outcome = Some(outcome);
                     r.payout = payout.0;
+                } else if outcome == 1 && r.outcome == Some(1) && r.payout == 0 && payout.0 > 0 {
+                    // win was mirrored at settle time with payout 0; the claim
+                    // receipt fills in the actual amount (order-independent:
+                    // if the claim landed first, this condition is false)
+                    r.payout = payout.0;
                 }
             }
             None => {
@@ -501,5 +506,28 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].side, None); // imported result
         assert_eq!(recs[0].outcome, Some(1));
+    }
+
+    #[test]
+    fn win_mirrored_at_settle_then_payout_filled_by_claim() {
+        let mut c = init();
+        set(user());
+        c.mint();
+
+        // coin mirrors the pick, then the win at settle time (payout unknown yet)
+        set(coin_acct());
+        c.record_pick(user(), 9, 0, U128(500));
+        c.record_result(user(), 9, 1, U128(0));
+        assert_eq!(c.get_records(user())[0].outcome, Some(1));
+        assert_eq!(c.get_records(user())[0].payout.0, 0);
+
+        // claim receipt fills the amount; a late duplicate zero-payout is ignored
+        c.record_result(user(), 9, 1, U128(600));
+        c.record_result(user(), 9, 1, U128(0));
+        assert_eq!(c.get_records(user())[0].payout.0, 600);
+
+        // and the summary counts it as a win with streak 1
+        let s = c.get_summary(user()).unwrap();
+        assert_eq!((s.wins, s.streak), (1, 1));
     }
 }
