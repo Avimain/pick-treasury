@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>$PICK — Parimutuel Treasury · Prediction Passport</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #c9d1d9;
+    --dim: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149;
+    --amber: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--mono); }
+  header { display: flex; gap: 16px; align-items: center; padding: 14px 20px;
+           border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; color: var(--blue); letter-spacing: 1px; }
+  header .grow { flex: 1; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px; display: grid; gap: 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+  h2 { font-size: 12px; letter-spacing: 2px; color: var(--amber); margin: 0 0 12px;
+       text-transform: uppercase; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .stat b { display: block; font-size: 20px; color: var(--green); }
+  .stat span { color: var(--dim); font-size: 11px; letter-spacing: 1px; }
+  button { background: #21262d; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--blue); color: var(--blue); }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .event { border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+  .event .q { font-weight: bold; }
+  .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 4px;
+           padding: 1px 7px; color: var(--dim); margin-left: 8px; }
+  .badge.live { color: var(--green); border-color: var(--green); }
+  .badge.resolved { color: var(--amber); border-color: var(--amber); }
+  .badge.void { color: var(--red); border-color: var(--red); }
+  .odds { height: 8px; border-radius: 4px; background: var(--red); margin: 8px 0; overflow: hidden; }
+  .odds i { display: block; height: 100%; background: var(--green); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .side { color: var(--dim); }
+  .side b { color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--dim); font-weight: normal; font-size: 11px;
+       letter-spacing: 1px; border-bottom: 1px solid var(--line); padding: 6px 8px; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  #toast { position: fixed; bottom: 16px; right: 16px; background: #1f6feb; color: #fff;
+           padding: 10px 16px; border-radius: 6px; display: none; max-width: 340px; z-index: 9; }
+  .dim { color: var(--dim); }
+  details summary { cursor: pointer; color: var(--dim); }
+  a { color: var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <h1>$PICK</h1>
+  <span class="dim">parimutuel treasury · prediction passport</span>
+  <span class="grow"></span>
+  <span id="net" class="dim"></span>
+  <button id="account" class="primary">connect wallet</button>
+</header>
+
+<main>
+  <section class="stats" id="stats">
+    <div class="stat"><b id="s-supply">–</b><span>TOTAL SUPPLY</span></div>
+    <div class="stat"><b id="s-treasury">–</b><span>FREE TREASURY</span></div>
+    <div class="stat"><b id="s-balance">–</b><span>MY BALANCE</span></div>
+    <div class="stat"><b id="s-streak">–</b><span>MY STREAK</span></div>
+    <div class="stat"><b id="s-tier">–</b><span>MY TIER</span></div>
+    <div class="stat"><b id="s-passport">–</b><span>PASSPORT</span></div>
+  </section>
+
+  <section>
+    <h2>Open &amp; recent events</h2>
+    <div id="events" class="dim">loading…</div>
+  </section>
+
+  <section>
+    <h2>Streak leaderboard</h2>
+    <table id="board"><thead><tr><th>#</th><th>account</th><th>streak</th><th>w/l</th><th>tier</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Onchain log — stakes, burns, claims</h2>
+    <table id="log"><thead><tr><th>time</th><th>kind</th><th>account</th><th>event</th><th>amount</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <details>
+      <summary>settings — contract addresses (saved locally)</summary>
+      <div class="row" style="margin-top:10px">
+        <label>coin <input id="cfg-coin" size="28" /></label>
+        <label>passport <input id="cfg-passport" size="28" /></label>
+        <button id="cfg-save">save</button>
+      </div>
+      <p class="dim">Simulation &amp; docs: <a href="../simulation/simulate.py">simulate.py</a> · <a href="../README.md">README</a></p>
+    </details>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script type="module">
+// ---------------------------------------------------------------- config
+const CFG = {
+  networkId: "testnet",
+  rpcUrl: "https://rpc.testnet.near.org",
+  coin: localStorage.getItem("pick.coin") || "coin.testnet",
+  passport: localStorage.getItem("pick.passport") || "passport.testnet",
+  gas: "150000000000000",
+  decimals: 9,
+};
+
+document.getElementById("net").textContent = CFG.networkId;
+document.getElementById("cfg-coin").value = CFG.coin;
+document.getElementById("cfg-passport").value = CFG.passport;
+document.getElementById("cfg-save").onclick = () => {
+  localStorage.setItem("pick.coin", document.getElementById("cfg-coin").value.trim());
+  localStorage.setItem("pick.passport", document.getElementById("cfg-passport").value.trim());
+  location.reload();
+};
+
+// ---------------------------------------------------------------- helpers
+function toast(msg, ms = 4000) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.style.display = "block";
+  setTimeout(() => (el.style.display = "none"), ms);
+}
+
+async function view(contract, method, args = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500 * attempt));
+    try {
+      const res = await fetch(CFG.rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: "pick", method: "query",
+          params: {
+            request_type: "call_function", finality: "final",
+            account_id: contract, method_name: method,
+            args_base64: btoa(JSON.stringify(args)),
+          },
+        }),
+      });
+      if (!res.ok) throw new Error("rpc http " + res.status);
+      const json = await res.json();
+      if (json.error) throw new Error(JSON.stringify(json.error));
+      if (json.result?.result === undefined) throw new Error(method + ": empty result");
+      const bytes = Uint8Array.from(json.result.result, (c) =>
+        typeof c === "number" ? c : c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      return text ? JSON.parse(text) : null;
+    } catch (e) {
+      lastErr = e;
+      if (e.message && e.message.includes("rpc http")) continue; // 429 etc — retry
+      if (e.message && e.message.includes("Failed to fetch")) continue; // network — retry
+      throw e; // contract-level errors won't fix themselves
+    }
+  }
+  throw lastErr;
+}
+
+const fmt = (raw, d = CFG.decimals) => {
+  const s = BigInt(raw).toString().padStart(d + 1, "0");
+  const int = s.slice(0, -d), frac = s.slice(-d).replace(/0+$/, "");
+  return frac ? `${int}.${frac.slice(0, 4)}` : int;
+};
+const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "–");
+const when = (ts) => new Date(ts * 1000).toISOString().slice(5, 16).replace("T", " ");
+
+// ---------------------------------------------------------------- wallet
+let selector = null, accountId = null;
+async function initWallet() {
+  try {
+    const { setupWalletSelector } = await import("https://esm.sh/@near-wallet-selector/core@8.9.1");
+    const { setupMyNearWallet } = await import("https://esm.sh/@near-wallet-selector/my-near-wallet@8.9.1");
+    selector = await setupWalletSelector({
+      network: CFG.networkId,
+      modules: [setupMyNearWallet()],
+    });
+    const state = selector.store.getState();
+    accountId = state.accounts[0]?.accountId ?? null;
+    selector.store.subscribe(({ accounts }) => {
+      accountId = accounts[0]?.accountId ?? null;
+      renderAccount(); refresh();
+    });
+    renderAccount();
+  } catch (e) {
+    console.error("wallet init failed", e);
+    toast("wallet lib failed to load — read-only mode");
+  }
+}
+
+function renderAccount() {
+  const btn = document.getElementById("account");
+  btn.textContent = accountId ?? "connect wallet";
+  btn.classList.toggle("primary", !accountId);
+}
+
+document.getElementById("account").onclick = async () => {
+  if (!selector) return toast("wallet lib not loaded");
+  if (accountId) {
+    await selector.signOut();
+  } else {
+    await selector.signIn({ walletId: "my-near-wallet" });
+  }
+};
+
+async function send(contract, method, args) {
+  if (!accountId) { toast("connect a wallet first"); return; }
+  try {
+    const res = await selector.signAndSendTransaction({
+      receiverId: contract,
+      actions: [{ type: "FunctionCall", params: { methodName: method, args, gas: CFG.gas, deposit: "0" } }],
+    });
+    if (res && res.some((r) => r.type === "TransactionResult" && !r.success)) {
+      toast("transaction failed — check wallet");
+    } else {
+      toast("transaction sent: " + method);
+      setTimeout(refresh, 4000);
+    }
+  } catch (e) { toast("rejected/failed: " + (e.message || e)); }
+}
+
+// ---------------------------------------------------------------- render
+const state = { events: [], myStats: null };
+
+function eventStatus(e) {
+  if (e.status.Void) return "void";
+  if (e.status.Resolved) return "resolved";
+  const now = Math.floor(Date.now() / 1000);
+  if (now > e.close_ts) return "closed";
+  return "live";
+}
+
+async function renderEvents() {
+  const box = document.getElementById("events");
+  box.innerHTML = "";
+  for (const e of state.events.slice().reverse()) {
+    const st = eventStatus(e);
+    const a = BigInt(e.stake_a), b = BigInt(e.stake_b), tot = a + b;
+    const pctA = tot > 0 ? Number((a * 1000n) / tot) / 10 : 50;
+    const el = document.createElement("div");
+    el.className = "event";
+    el.innerHTML = `
+      <div><span class="q">${e.question}</span>
+        <span class="badge ${st}">${st.toUpperCase()}</span>
+        <span class="badge">#${e.id}</span></div>
+      <div class="odds" title="side A share"><i style="width:${st === "void" ? 50 : pctA}%"></i></div>
+      <div class="row">
+        <span class="side"><b>${e.side_a}</b> ${fmt(e.stake_a)} PICK</span>
+        <span class="side"><b>${e.side_b}</b> ${fmt(e.stake_b)} PICK</span>
+        ${e.status.Resolved ? `<span class="side">pool <b>${fmt(e.winner_pool)}</b> → ${e.status.Resolved.winner === 0 ? e.side_a : e.side_b} wins</span>` : ""}
+        ${st === "live" ? `<span class="side">closes ${when(e.close_ts)} UTC</span>` : ""}
+      </div>
+      <div class="row" data-actions></div>`;
+    const actions = el.querySelector("[data-actions]");
+    if (st === "live" && accountId) {
+      const sideSel = document.createElement("select");
+      sideSel.innerHTML = `<option value="0">${e.side_a}</option><option value="1">${e.side_b}</option>`;
+      const amt = document.createElement("input");
+      amt.placeholder = "amount PICK"; amt.size = 12;
+      const btn = document.createElement("button");
+      btn.className = "primary"; btn.textContent = "stake";
+      btn.onclick = () => {
+        const raw = BigInt(Math.round(Number(amt.value) * 10 ** CFG.decimals)).toString();
+        if (!amt.value || raw === "0") return toast("enter an amount");
+        send(CFG.coin, "stake", { event_id: Number(e.id), side: Number(sideSel.value), amount: raw });
+      };
+      actions.append(sideSel, amt, btn);
+    }
+    if (accountId) {
+      try {
+        const pick = await view(CFG.coin, "get_pick", { user: accountId, event_id: Number(e.id) });
+        if (pick) {
+          const tag = document.createElement("span");
+          tag.className = "side";
+          tag.innerHTML = `your pick: <b>${pick.side === 0 ? e.side_a : e.side_b}</b> of ${fmt(pick.amount)} ${pick.claimed ? "· claimed" : ""}`;
+          actions.append(tag);
+          if (e.status.Resolved && !pick.claimed && !pick.refunded && pick.side === e.status.Resolved.winner) {
+            const c = document.createElement("button");
+            c.className = "primary"; c.textContent = "claim winnings";
+            c.onclick = () => send(CFG.coin, "claim", { event_id: Number(e.id) });
+            actions.append(c);
+          }
+          const refundable = (e.status.Void) ||
+            (!e.status.Resolved && Math.floor(Date.now() / 1000) > e.resolve_deadline);
+          if (refundable && !pick.refunded && !pick.claimed) {
+            const r = document.createElement("button");
+            r.textContent = "refund";
+            r.onclick = () => send(CFG.coin, "refund", { event_id: Number(e.id) });
+            actions.append(r);
+          }
+        }
+      } catch { /* no pick for this user */ }
+    }
+    box.append(el);
+  }
+  if (!state.events.length) box.textContent = "no events yet — the resolver creates them";
+}
+
+async function renderStats() {
+  const [supply, treasury] = await Promise.all([
+    view(CFG.coin, "ft_total_supply").catch(() => null),
+    view(CFG.coin, "free_treasury").catch(() => null),
+  ]);
+  if (supply !== null) document.getElementById("s-supply").textContent = fmt(supply);
+  if (treasury !== null) document.getElementById("s-treasury").textContent = fmt(treasury);
+  if (accountId) {
+    const [bal, stats, pass] = await Promise.all([
+      view(CFG.coin, "ft_balance_of", { account_id: accountId }).catch(() => "0"),
+      view(CFG.coin, "get_stats", { user: accountId }).catch(() => null),
+      view(CFG.passport, "is_minted", { user: accountId }).catch(() => false),
+    ]);
+    document.getElementById("s-balance").textContent = fmt(bal);
+    document.getElementById("s-streak").textContent = stats ? stats.streak : "–";
+    document.getElementById("s-tier").textContent = stats ? stats.tier : "–";
+    const p = document.getElementById("s-passport");
+    p.textContent = pass ? "minted" : "none";
+    const old = document.getElementById("mint-btn");
+    if (old) old.remove();
+    if (!pass) {
+      const btn = document.createElement("button");
+      btn.textContent = "mint (free)"; btn.style.marginTop = "6px";
+      btn.onclick = () => send(CFG.passport, "mint", {});
+      p.after(btn);
+      btn.id = "mint-btn";
+    }
+  } else {
+    ["s-balance", "s-streak", "s-tier", "s-passport"].forEach((id) =>
+      (document.getElementById(id).textContent = "–"));
+  }
+}
+
+async function renderBoard() {
+  const rows = await view(CFG.coin, "get_leaderboard", { limit: 10 }).catch(() => []);
+  const tb = document.querySelector("#board tbody");
+  tb.innerHTML = rows.map((r, i) => `
+    <tr><td>${String(i + 1).padStart(2, "0")}</td><td>${accountId === r.account ? "<b>you</b>" : short(r.account)}</td>
+    <td class="pos">${r.streak}</td><td>${r.wins}/${r.losses}</td><td class="dim">${r.tier}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="dim">no settled picks yet</td></tr>`;
+}
+
+async function renderLog() {
+  const rows = await view(CFG.coin, "get_history", { limit: 30 }).catch(() => []);
+  const tb = document.querySelector("#log tbody");
+  tb.innerHTML = rows.slice().reverse().map((r) => `
+    <tr><td class="dim">${when(r.ts)}</td><td>${r.kind}</td>
+    <td>${r.account === accountId ? "<b>you</b>" : short(r.account)}</td>
+    <td class="dim">${r.event_id === "18446744073709551615" ? "—" : "#" + r.event_id}</td>
+    <td>${fmt(r.amount)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="dim">empty log</td></tr>`;
+}
+
+// ---------------------------------------------------------------- loop
+async function refresh() {
+  try {
+    state.events = await view(CFG.coin, "get_events");
+    await renderEvents();
+  } catch (e) {
+    console.error(e);
+    document.getElementById("events").textContent =
+      `cannot reach coin contract "${CFG.coin}" — deploy the wasm and set its address in settings.`;
+  }
+  await Promise.allSettled([renderStats(), renderBoard(), renderLog()]);
+}
+
+window.__pick = { CFG, view, fmt, refresh };
+
+await initWallet();
+await refresh();
+setInterval(refresh, 20_000);
+</script>
+</body>
+</html>
