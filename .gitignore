@@ -1,2 +1,6 @@
 /target
 .DS_Store
+
+# Personal data — never committed (hackathon rules require this)
+submission-payload.draft.json
+*.local.json
