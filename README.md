@@ -27,6 +27,35 @@ Every parameter is frozen at deploy, readable by anyone via `get_params`, and
 
 ![architecture](docs/architecture.svg)
 
+## What it does
+
+$PICK is a NEP-141 memecoin where **1% of every transfer automatically funds
+prediction pools inside the token contract**. Holders stake on real events with
+one click; winners split the pot + 2% of the treasury; 20% of losing stakes (and
+half the tax) burn. A second contract, a soulbound NEP-171 **Prediction
+Passport**, records every pick and its tier (`TRADER` / `ORACLE`) changes what
+the contract actually pays on claim.
+
+**Benefits:** a memecoin with a mechanic instead of just a chart — and a
+prediction market with no bank, no oracle subscription, no custodian, no
+backend. Supply reacts to community activity instead of only trading, payouts
+are auditable from two `view` calls, and params are frozen at deploy.
+
+**What's unique here:**
+
+1. **The market lives inside the token** — tax → pools → resolve → claim are
+   synchronous in-contract calls, not a separate protocol with a server someone
+   could switch off.
+2. **The NFT changes the maths** — the passport isn't a receipt; it's a payout
+   multiplier gated by onchain wins/streaks.
+3. **Reactive supply** — 1% tax burn + 20% loser burn, so emission is driven by
+   actual play; a 60-day simulation ships in the repo.
+4. **Zero trust required** — no admin key, resolver address frozen at `new()`,
+   `get_params` readable by anyone.
+5. **Proof, not claims** — event #4 already settled live: 200,000 vs 50,000 →
+   **260,009.98 PICK paid out**, matching the published formula exactly;
+   15/15 tests.
+
 ## Contracts
 
 | Contract | wasm | Purpose |
@@ -156,6 +185,48 @@ missing resolution).
 permissionless and mirrors the win to the passport at settle time, so records
 can't be hidden by refusing to claim (the claim receipt later fills in the
 payout amount).
+
+## How is $PICK different?
+
+Close neighbours exist. Each one has a piece of what we built; none has the
+combination.
+
+**Closest prior art (honest list):**
+
+| Project | What it does | Where we differ |
+|---|---|---|
+| [HyperHood](https://hyper-hood.xyz/) | 5% buy/sell tax → WETH vault that pays daily traders and prediction winners | House vault pays fixed payrolls; taxes are hard-capped but *lowerable by the team*; no NFT in the payout maths |
+| [PMX](https://pmx.trade/whitepaper) (Solana) | 3% token fee: 1/3 burns, 2/3 is bet on an external venue (Pascal, USDC) by a keeper key | Bets leave the token; keeper-controlled; no holder-vs-holder pool |
+| $PSTR (Predict Strategy) | 2.5% tax → treasury → keeper buys predict.fun markets → buyback/burn | Self-described as keeper-run: "public, not trustless" |
+| TrenchyBet V4 | Uniswap V4 hooks: launch tax seeds a binary AMM per token | Separate hook + AMM contracts, admin-resolved in the demo, needs an LP |
+| Smolting Inu | Token-contract coinflip, losers burned | Single-sided gamble, no parimutuel pool, no treasury bonus |
+| [Pumpcade](https://docs.cade.market/mechanics/parimutuel-markets), Hedgehog Markets, BetPot | Parimutuel pools with NFT tiers | Their NFTs give token allocations and staking multipliers — not a different payout formula |
+| [TruthBounty](https://github.com/Leihyn/TruthBounty) | Soulbound performance NFT for prediction history | Reputation only; changes nothing about what you're paid |
+
+**So the differentiation is structural, not cosmetic:**
+
+1. **Peer-vs-peer parimutuel inside the fungible token** — the house never takes
+   the other side; winners are paid by losers + a fixed 2% treasury cut, in the
+   same token, in one synchronous transaction. No vault, no LP, no external
+   venue, no keeper key.
+2. **The soulbound NFT is a payout parameter** — `TRADER` +1%, `ORACLE` +3%,
+   earned by onchain wins, enforced at `claim`. Closest projects hand out
+   allocations or reputation instead.
+3. **Supply responds to play** — 20% of losing stakes burn, so losses still
+   accrue to holders; simulated over 60 days in the repo.
+4. **No admin key at all** — params frozen at deploy, resolver frozen at
+   `new()`. The rivals all keep a lever (lowerable taxes, market-picker role,
+   admin resolve).
+5. **No backend** — streaks, leaderboard and claim history are contract views,
+   not an indexer someone stops paying for.
+
+**Why people would use it:** you already hold the token, so there's zero
+onboarding — no deposit, no new app, no bank/oracle/custodian; stake with the
+balance in your wallet. Winners earn yield from play rather than inflation;
+losers shrink supply in your favour; the passport turns a track record into
+higher payouts and status. The honest limits are stated in the section below:
+[testnet only, outcomes come from a trusted resolver address, no price-feed
+oracle yet, shallow liquidity, sybil unsolved](#trust-model--honest-limitations-read-before-judging).
 
 ## Trust model & honest limitations (read before judging)
 
