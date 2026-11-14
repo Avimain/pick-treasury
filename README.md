@@ -7,6 +7,12 @@
 **Live demo (no wallet needed):**
 https://avimain.github.io/pick-treasury/frontend/index.html?demo=1
 
+**Live testnet view of a settled account** (real `pick-coin.testnet` data, read-only):
+https://avimain.github.io/pick-treasury/frontend/index.html?user=pick-team.testnet
+
+**Demo video (41s, voiceover):** [docs/demo.mp4](docs/demo.mp4) — script in
+[docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md)
+
 **Problem:** most memecoins do nothing but trade, and prediction markets
 demand a bank account, an oracle subscription and a custodian. $PICK is a
 NEP-141 memecoin whose transfer tax funds parimutuel prediction pools
@@ -280,6 +286,9 @@ with a rule, not a hyperinflation schedule.
   build step, no framework
 
 ## Demo script (40s)
+
+Narrated video: [docs/demo.mp4](docs/demo.mp4) (frames captured from the live
+deployment; full script + shot list in [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md)).
 
 1. `ft_transfer` → tax splits live, supply ticks down, history log appends
 2. `stake` both sides of an open event → implied odds move
