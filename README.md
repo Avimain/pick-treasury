@@ -1,6 +1,11 @@
 # $PICK — Parimutuel Treasury Memecoin × Prediction Passport
 
+[![CI](https://github.com/Avimain/pick-treasury/actions/workflows/ci.yml/badge.svg)](https://github.com/Avimain/pick-treasury/actions/workflows/ci.yml)
+
 **Tracks:** `memecoins` (primary, track 11) + `nfts` (secondary, track 10)
+
+**Live demo (no wallet needed):**
+https://avimain.github.io/pick-treasury/frontend/index.html?demo=1
 
 **Problem:** most memecoins do nothing but trade, and prediction markets
 demand a bank account, an oracle subscription and a custodian. $PICK is a
@@ -68,7 +73,9 @@ No wallet or deploy needed for steps 1–3.
    → see the summary table printed below and `simulation/out/supply.svg`
    (chart, stdlib-only — no matplotlib required).
 
-3. **Open the UI with fixtures** (from the repository root)
+3. **Open the UI with fixtures** — or skip the local server and use the
+   hosted copy:
+   https://avimain.github.io/pick-treasury/frontend/index.html?demo=1
    ```bash
    python3 -m http.server 8742
    # then open http://localhost:8742/frontend/index.html?demo=1
@@ -283,9 +290,9 @@ with a rule, not a hyperinflation schedule.
 
 ## Submission checklist
 
-- [ ] Repository is public and this README matches actual behavior
-- [ ] Both contracts deployed to testnet; addresses filled in above
-- [ ] Frontend hosted (GitHub Pages on this repo) and reachable
+- [x] Repository is public and this README matches actual behavior
+- [x] Both contracts deployed to testnet; addresses filled in above
+- [x] Frontend hosted (GitHub Pages on this repo) and reachable
 - [ ] Demo posted on X: built at NEAR HACKATHON, tags @NEARProtocol +
       #NEARHackathon, video/screenshots attached
 - [ ] Submission sent (tracks `["memecoins","nfts"]`) before **14 Nov 2026 ·
