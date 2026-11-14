@@ -2,11 +2,14 @@
 
 **Tracks:** `memecoins` (primary, track 11) + `nfts` (secondary, track 10)
 
-A NEP-141 memecoin whose transfer tax funds parimutuel prediction pools:
-holders stake on events, winners split the pot plus a treasury bonus, a fixed
-slice of losing stakes burns, and streaks are tracked onchain. A soulbound
-NEP-171 **Prediction Passport** records every pick and unlocks tier bonuses on
-claims.
+**Problem:** most memecoins do nothing but trade, and prediction markets
+demand a bank account, an oracle subscription and a custodian. $PICK is a
+NEP-141 memecoin whose transfer tax funds parimutuel prediction pools
+*inside the token contract*: holders stake on events, winners split the pot
+plus a treasury bonus, a fixed slice of losing stakes burns, and streaks are
+tracked onchain — no backend that someone could switch off. A soulbound
+NEP-171 **Prediction Passport** records every pick and unlocks tier bonuses
+on claims.
 
 Every parameter is frozen at deploy, readable by anyone via `get_params`, and
 **there is no admin key that can change it**.
@@ -20,13 +23,30 @@ Every parameter is frozen at deploy, readable by anyone via `get_params`, and
 | `coin` | `pick_coin.wasm` | NEP-141 + NEP-145: transfer tax, treasury, events, staking, resolution, claims, streaks, public log |
 | `passport` | `pick_passport.wasm` | Soulbound NEP-171: pick/result mirror, tier display, perk gate registered in the coin |
 
-| Address | Status |
-|---|---|
-| coin | **pending testnet deploy** — runbook: [DEPLOY.md](DEPLOY.md) |
-| passport | **pending testnet deploy** — runbook: [DEPLOY.md](DEPLOY.md) |
+| Address | Network | Role |
+|---|---|---|
+| `pick-coin.testnet` | testnet | NEP-141 + NEP-145 token — tax, treasury, events, staking, claims |
+| `pick-passport.testnet` | testnet | soulbound NEP-171 passport |
+| `pick-resolver.testnet` | testnet | resolver frozen into `params.resolver` at deploy — creates and resolves events |
 
-After deploy the two addresses go in this table and in the frontend's settings
-panel (stored per-browser in `localStorage`).
+Both contracts are deployed and initialized on testnet, and the frontend
+defaults to those two addresses (override per-browser in the settings panel,
+stored in `localStorage`). Rebuild/redeploy runbook: [DEPLOY.md](DEPLOY.md).
+
+A complete cycle is already settled on this deployment: event **4** ("Will the
+full PICK demo path (mint, stake, resolve, claim) verify on testnet?") took
+200,000 PICK on side A and 50,000 PICK on side B, resolved to side A, and paid
+**260,009.98 PICK** on claim — 240,000 base (winner side + loser side − 20%
+loser burn) plus a 20,010 treasury bonus, which is 2% of the free treasury and
+had itself absorbed the 500 PICK left behind by an earlier 1% transfer tax.
+
+```bash
+near contract call-function as-read-only pick-coin.testnet get_event \
+  json-args '{"event_id": 4}' network-config testnet now
+near contract call-function as-read-only pick-passport.testnet get_records \
+  json-args '{"user": "pick-team.testnet"}' network-config testnet now
+# -> [{ "event_id": 4, "side": 0, "outcome": 1, "payout": "260009980000000" }]
+```
 
 ## Try it (do X → see Y)
 
@@ -36,9 +56,10 @@ No wallet or deploy needed for steps 1–3.
    ```bash
    cargo test
    ```
-   → see `15 passed; 0 failed` (11 coin + 4 passport), including a randomized
-   300-round lifecycle test that re-asserts the escrow/supply/NEAR-solvency
-   invariants after every action.
+   → see two green result lines — `11 passed; 0 failed` (coin) and
+   `4 passed; 0 failed` (passport) — including a randomized 300-round
+   lifecycle test that re-asserts the escrow/supply/NEAR-solvency invariants
+   after every action.
 
 2. **Run the 60-day simulation**
    ```bash
@@ -47,7 +68,7 @@ No wallet or deploy needed for steps 1–3.
    → see the summary table printed below and `simulation/out/supply.svg`
    (chart, stdlib-only — no matplotlib required).
 
-3. **Open the UI with fixtures**
+3. **Open the UI with fixtures** (from the repository root)
    ```bash
    python3 -m http.server 8742
    # then open http://localhost:8742/frontend/index.html?demo=1
@@ -130,6 +151,11 @@ payout amount).
    deploy. It cannot be changed. Its failures are bounded: unresolved events
    auto-refund after `resolve_deadline`. Crypto-price events could be moved to
    a price-feed resolver without touching the staking math (roadmap).
+   The sharpest edge of that design: `resolve` only checks
+   `resolve_deadline`, **not** `close_ts`, so a malicious resolver could pick
+   an outcome while betting is still open. Gating on `close_ts` is a one-line
+   change and is on the roadmap; for this demo the resolver is a documented,
+   disclosed account rather than an anonymous one.
 2. **Passport mirrors are best-effort.** The coin fires `record_pick` /
    `record_result` at the passport as fire-and-forget receipts. The coin's own
    state is authoritative; `passport.repair()` re-registers the perk if the
@@ -210,7 +236,8 @@ with a rule, not a hyperinflation schedule.
 
 ## Track requirements → evidence
 
-**Track 11 · Memecoins With Mechanics** (`memecoins`)
+**Track 11 · Memecoins With Mechanics** (`memecoins`) —
+[track prompt](https://github.com/nearai/near-hackathon-prompt-examples/blob/main/tracks/11-memecoins.md)
 
 | Requirement | Evidence |
 |---|---|
@@ -221,7 +248,8 @@ with a rule, not a hyperinflation schedule.
 | Simulate 60 days, show supply under scenarios | table + `simulation/out/supply.svg` above, reproducible with `SEED=42` |
 | Sybil limits stated plainly | "Trust model & honest limitations" item 5 |
 
-**Track 10 · NFTs That Do Something** (`nfts`)
+**Track 10 · NFTs That Do Something** (`nfts`) —
+[track prompt](https://github.com/nearai/near-hackathon-prompt-examples/blob/main/tracks/10-nfts.md)
 
 | Requirement | Evidence |
 |---|---|

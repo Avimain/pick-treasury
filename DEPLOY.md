@@ -6,39 +6,51 @@ Prereqs: Rust + `wasm32-unknown-unknown` target, `cargo-near`, `near-cli-rs`.
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install cargo-near near-cli-rs
-near network-status testnet          # sanity check
+near --version && cargo near --version   # toolchain sanity check
 ```
 
-All commands run from the repo root. Placeholder names used below:
+All commands run from the repo root unless noted. Accounts actually used for
+the live demo:
 
-| Variable | Example |
+| Variable | Value |
 |---|---|
 | `COIN` | `pick-coin.testnet` |
 | `PASSPORT` | `pick-passport.testnet` |
-| `RESOLVER` | your own testnet account (creates/resolves events) |
-| `YOU` | your wallet account |
+| `RESOLVER` | `pick-resolver.testnet` (creates/resolves events) |
+| `TEAM` | `pick-team.testnet` (holds the initial supply) |
+| `YOU` | your own wallet account |
 
 ## 1. Create the two contract accounts
 
 ```bash
-near account create-account pick-coin.testnet          --use-faucet
-near account create-account pick-passport.testnet      --use-faucet
+near account create-account sponsor-by-faucet-service pick-coin.testnet \
+  autogenerate-new-keypair save-to-keychain network-config testnet create
+near account create-account sponsor-by-faucet-service pick-passport.testnet \
+  autogenerate-new-keypair save-to-keychain network-config testnet create
 ```
 
-(Any names you like; they must be distinct. Fallback if the subcommand
-differs in your CLI version: create them from the wallet UI at
+(Any names you like; they must be distinct. The faucet-funded key lands in the
+near-cli keychain, which is what `sign-with-keychain` uses below. Fallback if
+your CLI version lacks the subcommand: create them from the wallet UI at
 https://wallet.testnet.near.org → Create account.)
 
 ## 2. Build
 
 ```bash
 cargo build --target wasm32-unknown-unknown --release
-# or (deterministic, size-optimized — recommended for the real deploy):
-cargo near build --non-deterministic
+# or the production artifact (NEP-330 build info + wasm-opt: 255 KB vs 513 KB).
+# cargo near must run from the contract's crate directory, not the workspace root:
+cd coin   && cargo near build non-reproducible-wasm --no-abi && cd ..
+cd passport && cargo near build non-reproducible-wasm --no-abi && cd ..
 ```
 
-Artifacts: `target/wasm32-unknown-unknown/release/pick_coin.wasm`,
-`target/wasm32-unknown-unknown/release/pick_passport.wasm`.
+Artifacts: `target/wasm32-unknown-unknown/release/pick_coin.wasm` and
+`.../pick_passport.wasm` (plain build), or `target/near/pick_coin/pick_coin.wasm`
+and `target/near/pick_passport/pick_passport.wasm` (`cargo near`).
+
+`--no-abi` skips Near-ABI generation, which requires `JsonSchema` on every type
+appearing in a public signature. The ABI is metadata only — the contract runs
+identically without it.
 
 ## 3. Deploy both
 
@@ -55,7 +67,7 @@ near contract deploy pick-passport.testnet use-file target/wasm32-unknown-unknow
 near contract call-function as-transaction pick-coin.testnet new \
   json-args '{
     "params": {
-      "resolver": "RESOLVER",
+      "resolver": "pick-resolver.testnet",
       "passport": "pick-passport.testnet",
       "transfer_tax_bps": 100,
       "tax_burn_bps": 5000,

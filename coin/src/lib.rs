@@ -506,6 +506,13 @@ impl Coin {
     /// Register `account_id` (default: caller) by depositing NEAR for the
     /// ledger entry. Deposits below `min` panic. Re-depositing tops up
     /// `available`; `registration_only` on an existing account refunds.
+    ///
+    /// `#[payable]` is required: near-sdk's generated wrapper rejects any
+    /// attached deposit on a method that lacks it, and this one is defined
+    /// by NEP-145 to take a deposit. (Unit tests call the Rust method
+    /// directly and bypass that wrapper, so a missing `#[payable]` only
+    /// shows up on-chain.)
+    #[payable]
     pub fn storage_deposit(
         &mut self,
         account_id: Option<AccountId>,
