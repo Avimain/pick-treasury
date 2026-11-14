@@ -117,8 +117,12 @@
 
 <script type="module">
 // ---------------------------------------------------------------- config
-const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+const PARAMS = new URLSearchParams(location.search);
+const DEMO = PARAMS.get("demo") === "1";
 const DEMO_USER = "demo.testnet";
+// ?user=<account> — read-only inspection of any account against the live
+// contracts (no wallet, writes refused). Lets judges open a passport by URL.
+const VIEW_USER = PARAMS.get("user");
 
 const CFG = {
   networkId: "testnet",
@@ -133,6 +137,11 @@ document.getElementById("net").textContent = CFG.networkId;
 if (DEMO) {
   document.getElementById("demo-badge").style.display = "inline-block";
   document.getElementById("account").textContent = DEMO_USER;
+  document.getElementById("account").disabled = true;
+} else if (VIEW_USER) {
+  const badge = document.getElementById("demo-badge");
+  badge.style.display = "inline-block";
+  badge.textContent = "VIEW · read-only";
   document.getElementById("account").disabled = true;
 }
 document.getElementById("cfg-coin").value = CFG.coin;
@@ -328,6 +337,7 @@ document.getElementById("account").onclick = async () => {
 
 async function send(contract, method, args) {
   if (DEMO) return toast("demo mode — writes disabled (?demo=1 is read-only)");
+  if (!selector) return toast("read-only view (?user=…) — connect a wallet to write");
   if (!accountId) { toast("connect a wallet first"); return; }
   try {
     const wallet = await selector.wallet();
@@ -537,6 +547,9 @@ window.__pick = { CFG, view, fmt, refresh, renderStats, renderBoard, renderLog, 
 
 if (DEMO) {
   accountId = DEMO_USER; // demo fixture user — no wallet import needed
+  renderAccount();
+} else if (VIEW_USER) {
+  accountId = VIEW_USER; // live read-only inspection — no wallet import
   renderAccount();
 } else {
   await initWallet();
